@@ -1,0 +1,29 @@
+{
+  "name": "Urgent Customer Reply Notification",
+  "description": "Notifies the team when a customer reply contains the phrase 'urgent'.",
+  "trigger": {
+    "type": "customer_reply",
+    "name": "Customer Reply Contains 'Urgent'",
+    "conditions": [
+      {
+        "field": "message.body",
+        "operator": "contains_any",
+        "value": [
+          "urgent"
+        ]
+      }
+    ]
+  },
+  "actions": [
+    {
+      "type": "internal_notification",
+      "name": "Notify Team about Urgent Reply",
+      "attributes": {
+        "title": "Urgent Customer Reply",
+        "body": "A customer reply contains 'urgent'. Please check.",
+        "redirectPage": "conversation",
+        "userType": "all"
+      }
+    }
+  ]
+}

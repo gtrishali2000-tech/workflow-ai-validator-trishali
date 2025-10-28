@@ -1,0 +1,814 @@
+Workflows AI – Live Coding Round Repo Skeleton (Node + TypeScript)
+
+This canvas contains a minimal, runnable skeleton you can hand to candidates. It matches our finalized assignment and includes:
+	•	Types & JSON Schema (AJV-ready)
+	•	Light RAG over local recipes (simple TF–IDF retriever)
+	•	LLM adapter (OpenAI by default, easily swappable)
+	•	Validation layer (design left open-ended; baseline AJV provided)
+	•	CLI (run.ts) and Eval harness (eval.ts)
+
+Candidate owns prompting, retrieval tuning, validation+repair strategy, and eval improvements. This skeleton only wires basics.
+
+⸻
+
+Project structure
+
+workflows-ai-live/
+├─ package.json
+├─ tsconfig.json
+├─ .env.example
+├─ schema/
+│  └─ workflow.schema.json
+├─ data/
+│  ├─ recipes.json
+│  ├─ eval_prompts.json
+│  └─ eval_gold.json
+└─ src/
+   ├─ types.ts
+   ├─ llm.ts
+   ├─ retriever.ts
+   ├─ validation.ts
+   ├─ prompt.ts
+   ├─ generateWorkflow.ts
+   ├─ eval.ts
+   └─ run.ts
+
+
+⸻
+
+package.json
+
+{
+  "name": "workflows-ai-live",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node dist/run.js",
+    "dev": "node --loader ts-node/esm src/run.ts",
+    "eval": "node --loader ts-node/esm src/eval.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "openai": "^4.56.0",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
+
+
+⸻
+
+tsconfig.json
+
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "resolveJsonModule": true
+  },
+  "include": ["src", "data", "schema"]
+}
+
+
+⸻
+
+.env.example
+
+# Provide one (or swap llm.ts to Anthropic etc.)
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4.1
+
+
+⸻
+
+schema/workflow.schema.json
+
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.com/workflow.schema.json",
+  "type": "object",
+  "required": ["trigger", "actions"],
+  "properties": {
+    "trigger": {
+      "type": "object",
+      "required": ["type", "name"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "customer_reply",
+            "appointment_booked",
+            "form_submission",
+            "payment_received",
+            "contact_tag_added"
+          ]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["field", "operator", "value"],
+            "properties": {
+              "field": { "type": "string", "minLength": 1 },
+              "operator": {
+                "type": "string",
+                "enum": ["equals", "contains_any", "in", "regex"]
+              },
+              "value": {
+                "oneOf": [
+                  { "type": "string" },
+                  { "type": "number" },
+                  { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                ]
+              },
+              "title": { "type": "string" },
+              "id": { "type": "string" },
+              "type": { "type": "string", "enum": ["string", "number", "select", "multiselect"] }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type", "name"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "send_email",
+              "send_sms",
+              "add_tag_to_contact",
+              "webhook_call",
+              "internal_notification"
+            ]
+          },
+          "name": { "type": "string", "minLength": 1 },
+          "order": { "type": "integer", "minimum": 0 },
+          "attributes": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["subject", "html"],
+                "properties": {
+                  "subject": { "type": "string" },
+                  "html": { "type": "string" },
+                  "attachments": { "type": "array", "items": { "type": "string" } }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["body"],
+                "properties": { "body": { "type": "string" } },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["tags"],
+                "properties": {
+                  "tags": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["method", "url"],
+                "properties": {
+                  "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH"] },
+                  "url": { "type": "string", "format": "uri" },
+                  "headers": { "type": "array", "items": { "type": "object", "required": ["key", "value"], "properties": { "key": { "type": "string" }, "value": { "type": "string" } }, "additionalProperties": false } },
+                  "customData": { "type": "array", "items": { "type": "object", "required": ["key", "value"], "properties": { "key": { "type": "string" }, "value": { "type": "string" } }, "additionalProperties": false } }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["title", "body"],
+                "properties": {
+                  "title": { "type": "string" },
+                  "body": { "type": "string" },
+                  "userType": { "type": "string", "enum": ["all", "owner", "assignee", "team"] },
+                  "redirectPage": { "type": "string", "enum": ["conversation", "contact", "dashboard"] }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
+
+
+⸻
+
+data/recipes.json (includes multi-action examples)
+
+[
+  {
+    "prompt": "Notify team when customer reply contains phrase urgent",
+    "workflow": {
+      "trigger": {
+        "type": "customer_reply",
+        "name": "Customer Reply Contains 'Urgent'",
+        "conditions": [
+          { "field": "message.body", "operator": "contains_any", "value": ["urgent"] }
+        ]
+      },
+      "actions": [
+        {
+          "type": "internal_notification",
+          "name": "Notify Team about Urgent Reply",
+          "attributes": {
+            "title": "Urgent Customer Reply",
+            "body": "A customer reply contains 'urgent'. Please check immediately.",
+            "redirectPage": "conversation",
+            "userType": "all"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "prompt": "When an appointment is booked on calendar h5fFrK6qybX2wL4aEay0, send a confirmation email, tag booked, and notify the owner",
+    "workflow": {
+      "trigger": {
+        "type": "appointment_booked",
+        "name": "Booking on Specific Calendar",
+        "conditions": [
+          { "field": "calendar.id", "operator": "equals", "value": "h5fFrK6qybX2wL4aEay0" }
+        ]
+      },
+      "actions": [
+        { "type": "send_email", "name": "Confirm Email", "attributes": { "subject": "Your Appointment is Confirmed", "html": "<p>See you soon.</p>" } },
+        { "type": "add_tag_to_contact", "name": "Tag Booked", "attributes": { "tags": ["booked"] } },
+        { "type": "internal_notification", "name": "Notify Owner", "attributes": { "title": "New Booking", "body": "You have a booking.", "userType": "owner" } }
+      ]
+    }
+  },
+  {
+    "prompt": "If a customer reply mentions refund, tag refund-intent, notify the team, and call a webhook to log the case",
+    "workflow": {
+      "trigger": {
+        "type": "customer_reply",
+        "name": "Refund Mention",
+        "conditions": [
+          { "field": "message.body", "operator": "contains_any", "value": ["refund", "money back"] }
+        ]
+      },
+      "actions": [
+        { "type": "add_tag_to_contact", "name": "Tag Refund", "attributes": { "tags": ["refund-intent"] } },
+        { "type": "internal_notification", "name": "Refund Alert", "attributes": { "title": "Refund Mentioned", "body": "Check conversation for refund." } },
+        { "type": "webhook_call", "name": "Log Refund Case", "attributes": { "method": "POST", "url": "https://hooks.example.com/refund" } }
+      ]
+    }
+  },
+  {
+    "prompt": "If form QGjfvBGQ95IW321CeMnH is submitted, add tags lead and web, send a thank-you email, and ping the team",
+    "workflow": {
+      "trigger": {
+        "type": "form_submission",
+        "name": "Specific Form",
+        "conditions": [
+          { "field": "form.id", "operator": "in", "value": ["QGjfvBGQ95IW321CeMnH"] }
+        ]
+      },
+      "actions": [
+        { "type": "add_tag_to_contact", "name": "Tag Lead/Web", "attributes": { "tags": ["lead", "web"] } },
+        { "type": "send_email", "name": "Thanks Email", "attributes": { "subject": "Thanks for your submission", "html": "<p>We got it.</p>" } },
+        { "type": "internal_notification", "name": "Notify Team", "attributes": { "title": "New Form Lead", "body": "A form was submitted.", "redirectPage": "contact" } }
+      ]
+    }
+  },
+  {
+    "prompt": "On successful payment, call a webhook, send a receipt email, and notify the team",
+    "workflow": {
+      "trigger": {
+        "type": "payment_received",
+        "name": "Payment Succeeded",
+        "conditions": [
+          { "field": "payment.payment_status", "operator": "equals", "value": "succeeded" }
+        ]
+      },
+      "actions": [
+        { "type": "webhook_call", "name": "Payment Webhook", "attributes": { "method": "POST", "url": "https://api.example.com/pay" } },
+        { "type": "send_email", "name": "Receipt Email", "attributes": { "subject": "Receipt", "html": "<p>Thank you for your purchase.</p>" } },
+        { "type": "internal_notification", "name": "Sales Notified", "attributes": { "title": "Payment Received", "body": "Customer has paid." } }
+      ]
+    }
+  },
+  {
+    "prompt": "When a contact gets tag vip-added, send an SMS",
+    "workflow": {
+      "trigger": {
+        "type": "contact_tag_added",
+        "name": "VIP",
+        "conditions": [
+          { "field": "tagsAdded", "operator": "equals", "value": "vip-added" }
+        ]
+      },
+      "actions": [
+        { "type": "send_sms", "name": "VIP SMS", "attributes": { "body": "Welcome VIP!" } }
+      ]
+    }
+  },
+  {
+    "prompt": "Any form submission should add tag webform-lead",
+    "workflow": {
+      "trigger": { "type": "form_submission", "name": "Any Form" },
+      "actions": [
+        { "type": "add_tag_to_contact", "name": "Tag Web Lead", "attributes": { "tags": ["webform-lead"] } }
+      ]
+    }
+  },
+  {
+    "prompt": "Any appointment should send email and tag booked",
+    "workflow": {
+      "trigger": { "type": "appointment_booked", "name": "Any Booking" },
+      "actions": [
+        { "type": "send_email", "name": "Appt Email", "attributes": { "subject": "Appointment Confirmed", "html": "<p>Confirmed.</p>" } },
+        { "type": "add_tag_to_contact", "name": "Tag Booked", "attributes": { "tags": ["booked"] } }
+      ]
+    }
+  },
+  {
+    "prompt": "Reply contains regex schedule\\s+demo should notify team",
+    "workflow": {
+      "trigger": {
+        "type": "customer_reply",
+        "name": "Schedule Demo Intent",
+        "conditions": [
+          { "field": "message.body", "operator": "regex", "value": "schedule\\s+demo" }
+        ]
+      },
+      "actions": [
+        { "type": "internal_notification", "name": "Demo Intent", "attributes": { "title": "Demo Request", "body": "Lead wants to schedule a demo." } }
+      ]
+    }
+  },
+  {
+    "prompt": "Successful payment should call webhook with contact meta",
+    "workflow": {
+      "trigger": {
+        "type": "payment_received",
+        "name": "Webhook on Payment",
+        "conditions": [
+          { "field": "payment.payment_status", "operator": "equals", "value": "succeeded" }
+        ]
+      },
+      "actions": [
+        { "type": "webhook_call", "name": "Payment Webhook", "attributes": { "method": "POST", "url": "https://api.example.com/pay", "customData": [{ "key": "email", "value": "{{contact.email}}" }] } }
+      ]
+    }
+  }
+]
+
+
+⸻
+
+data/eval_prompts.json (10 items, includes 4 multi-action)
+
+[
+  "Notify team when customer reply contains phrase urgent",
+  "When a contact gets tag vip-added, send an SMS",
+  "On successful payment, call webhook https://api.example.com/pay and email the customer",
+  "If form QGjfvBGQ95IW321CeMnH is submitted, add tags lead and web and notify the team",
+  "When appointment is booked on calendar h5fFrK6qybX2wL4aEay0, send confirmation email, tag booked, and notify owner",
+  "If a customer reply mentions refund, tag refund-intent, notify team, and call webhook https://hooks.example.com/refund",
+  "Any form submission should add tag webform-lead",
+  "Any appointment should tag booked and send an email",
+  "When customer reply matches regex schedule\\s+demo, notify team",
+  "If payment is succeeded, webhook to https://external.example.com/hook"
+]
+
+
+⸻
+
+data/eval_gold.json (aligned reference answers)
+
+[
+  {
+    "trigger": { "type": "customer_reply", "name": "Contains urgent", "conditions": [ { "field": "message.body", "operator": "contains_any", "value": ["urgent"] } ] },
+    "actions": [ { "type": "internal_notification", "name": "Urgent", "attributes": { "title": "Urgent", "body": "Reply contains urgent" } } ]
+  },
+  {
+    "trigger": { "type": "contact_tag_added", "name": "VIP", "conditions": [ { "field": "tagsAdded", "operator": "equals", "value": "vip-added" } ] },
+    "actions": [ { "type": "send_sms", "name": "VIP SMS", "attributes": { "body": "Welcome VIP!" } } ]
+  },
+  {
+    "trigger": { "type": "payment_received", "name": "Paid", "conditions": [ { "field": "payment.payment_status", "operator": "equals", "value": "succeeded" } ] },
+    "actions": [
+      { "type": "webhook_call", "name": "Pay Webhook", "attributes": { "method": "POST", "url": "https://api.example.com/pay" } },
+      { "type": "send_email", "name": "Thanks Email", "attributes": { "subject": "Thanks!", "html": "<p>Thanks!</p>" } }
+    ]
+  },
+  {
+    "trigger": { "type": "form_submission", "name": "Form QG", "conditions": [ { "field": "form.id", "operator": "in", "value": ["QGjfvBGQ95IW321CeMnH"] } ] },
+    "actions": [
+      { "type": "add_tag_to_contact", "name": "Add Tags", "attributes": { "tags": ["lead", "web"] } },
+      { "type": "internal_notification", "name": "Notify Team", "attributes": { "title": "New Form Lead", "body": "Form submitted" } }
+    ]
+  },
+  {
+    "trigger": { "type": "appointment_booked", "name": "Specific Calendar", "conditions": [ { "field": "calendar.id", "operator": "equals", "value": "h5fFrK6qybX2wL4aEay0" } ] },
+    "actions": [
+      { "type": "send_email", "name": "Confirm Email", "attributes": { "subject": "Your Appointment is Confirmed", "html": "<p>See you soon.</p>" } },
+      { "type": "add_tag_to_contact", "name": "Tag Booked", "attributes": { "tags": ["booked"] } },
+      { "type": "internal_notification", "name": "Notify Owner", "attributes": { "title": "New Booking", "body": "You have a booking.", "userType": "owner" } }
+    ]
+  },
+  {
+    "trigger": { "type": "customer_reply", "name": "Refund Flow", "conditions": [ { "field": "message.body", "operator": "contains_any", "value": ["refund", "money back"] } ] },
+    "actions": [
+      { "type": "add_tag_to_contact", "name": "Tag Refund", "attributes": { "tags": ["refund-intent"] } },
+      { "type": "internal_notification", "name": "Refund Alert", "attributes": { "title": "Refund Mentioned", "body": "Check conversation" } },
+      { "type": "webhook_call", "name": "Refund Hook", "attributes": { "method": "POST", "url": "https://hooks.example.com/refund" } }
+    ]
+  },
+  {
+    "trigger": { "type": "form_submission", "name": "Any Form" },
+    "actions": [ { "type": "add_tag_to_contact", "name": "Tag Web Lead", "attributes": { "tags": ["webform-lead"] } } ]
+  },
+  {
+    "trigger": { "type": "appointment_booked", "name": "Any Booking" },
+    "actions": [
+      { "type": "add_tag_to_contact", "name": "Tag Booked", "attributes": { "tags": ["booked"] } },
+      { "type": "send_email", "name": "Appt Email", "attributes": { "subject": "Appointment Confirmed", "html": "<p>Confirmed.</p>" } }
+    ]
+  },
+  {
+    "trigger": { "type": "customer_reply", "name": "Regex Demo", "conditions": [ { "field": "message.body", "operator": "regex", "value": "schedule\\s+demo" } ] },
+    "actions": [ { "type": "internal_notification", "name": "Demo Intent", "attributes": { "title": "Demo Request", "body": "Lead asked to schedule demo" } } ]
+  },
+  {
+    "trigger": { "type": "payment_received", "name": "External Hook", "conditions": [ { "field": "payment.payment_status", "operator": "equals", "value": "succeeded" } ] },
+    "actions": [ { "type": "webhook_call", "name": "External Hook", "attributes": { "method": "POST", "url": "https://external.example.com/hook" } } ]
+  }
+]
+
+
+⸻
+
+src/types.ts
+
+export type Operator = "equals" | "contains_any" | "in" | "regex";
+export type ConditionValue = string | number | string[];
+
+export interface Condition {
+  field: string;
+  operator: Operator;
+  value: ConditionValue;
+  title?: string;
+  id?: string;
+  type?: "string" | "number" | "select" | "multiselect";
+}
+
+export type TriggerType =
+  | "customer_reply"
+  | "appointment_booked"
+  | "form_submission"
+  | "payment_received"
+  | "contact_tag_added";
+
+export interface Trigger {
+  type: TriggerType;
+  name: string;
+  conditions?: Condition[];
+}
+
+export type ActionType =
+  | "send_email"
+  | "send_sms"
+  | "add_tag_to_contact"
+  | "webhook_call"
+  | "internal_notification";
+
+export interface SendEmailAttributes {
+  subject: string;
+  html: string;
+  attachments?: string[];
+}
+export interface SendSmsAttributes { body: string; }
+export interface AddTagAttributes { tags: string[]; }
+export interface WebhookAttributes {
+  method: "GET" | "POST" | "PUT" | "PATCH";
+  url: string;
+  headers?: { key: string; value: string }[];
+  customData?: { key: string; value: string }[];
+}
+export interface InternalNotificationAttributes {
+  title: string;
+  body: string;
+  userType?: "all" | "owner" | "assignee" | "team";
+  redirectPage?: "conversation" | "contact" | "dashboard";
+}
+
+export type ActionAttributes =
+  | SendEmailAttributes
+  | SendSmsAttributes
+  | AddTagAttributes
+  | WebhookAttributes
+  | InternalNotificationAttributes;
+
+export interface Action {
+  type: ActionType;
+  name: string;
+  attributes?: ActionAttributes;
+  order?: number;
+}
+
+export interface Workflow {
+  trigger: Trigger;
+  actions: Action[];
+}
+
+
+⸻
+
+src/llm.ts (adapter; candidates may modify freely)
+
+import OpenAI from "openai";
+
+export interface LLMResponse {
+  raw: string;
+}
+
+export async function callLLM(prompt: string, model = process.env.OPENAI_MODEL || "gpt-4.1"): Promise<LLMResponse> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY missing");
+  const client = new OpenAI({ apiKey });
+
+  // Minimal text call. Candidates can swap to JSON mode / tools.
+  const res = await client.chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: "You are a workflow builder that returns ONLY JSON per the provided schema. No prose." },
+      { role: "user", content: prompt }
+    ],
+    temperature: 0.2
+  });
+  const raw = res.choices[0]?.message?.content ?? "";
+  return { raw };
+}
+
+
+⸻
+
+src/retriever.ts (tiny TF–IDF over recipe prompts)
+
+import fs from "fs";
+import path from "path";
+
+export interface Recipe { prompt: string; workflow: any; }
+
+function tokenize(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/).filter(Boolean);
+}
+
+export class Retriever {
+  private recipes: Recipe[] = [];
+  private docFreq: Map<string, number> = new Map();
+  private docsTokens: string[][] = [];
+
+  constructor(file = path.resolve("data/recipes.json")) {
+    const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Recipe[];
+    this.recipes = data;
+    this.docsTokens = data.map(r => tokenize(r.prompt));
+    const df = new Map<string, number>();
+    this.docsTokens.forEach(tokens => {
+      const uniq = new Set(tokens);
+      uniq.forEach(t => df.set(t, (df.get(t) || 0) + 1));
+    });
+    this.docFreq = df;
+  }
+
+  retrieve(query: string, k = 3): Recipe[] {
+    const q = tokenize(query);
+    const N = this.recipes.length;
+    const scores = this.docsTokens.map((doc, i) => {
+      const tf = new Map<string, number>();
+      doc.forEach(t => tf.set(t, (tf.get(t) || 0) + 1));
+      let score = 0;
+      q.forEach(t => {
+        const df = this.docFreq.get(t) || 0;
+        if (df === 0) return;
+        const idf = Math.log((N + 1) / (df + 1));
+        const freq = tf.get(t) || 0;
+        score += freq * idf;
+      });
+      return { i, score };
+    });
+    scores.sort((a, b) => b.score - a.score);
+    return scores.slice(0, k).map(s => this.recipes[s.i]);
+  }
+}
+
+
+⸻
+
+src/validation.ts (baseline AJV; candidate may replace/extend)
+
+import Ajv from "ajv";
+import addFormats from "ajv-formats";
+import schema from "../schema/workflow.schema.json" assert { type: "json" };
+
+const ajv = new Ajv({ allErrors: true, strict: false });
+addFormats(ajv);
+const validate = ajv.compile(schema);
+
+export function validateWorkflow(obj: unknown): { valid: boolean; errors?: string } {
+  const ok = validate(obj);
+  if (ok) return { valid: true };
+  const msg = (validate.errors || []).map(e => `${e.instancePath} ${e.message}`).join("; ");
+  return { valid: false, errors: msg };
+}
+
+
+⸻
+
+src/prompt.ts (simple composer; candidate can redesign)
+
+import { Recipe } from "./retriever";
+
+export function composePrompt(userPrompt: string, examples: Recipe[]): string {
+  const fewShots = examples.map((ex, idx) => `Example ${idx + 1} NL:\n${ex.prompt}\nExample ${idx + 1} JSON:\n${JSON.stringify(ex.workflow, null, 2)}`).join("\n\n");
+  return [
+    "You convert natural language requests into a Workflow JSON that matches the schema.",
+    "Return ONLY valid JSON. No markdown. No explanations.",
+    fewShots,
+    `User NL:\n${userPrompt}\nJSON:`
+  ].filter(Boolean).join("\n\n");
+}
+
+
+⸻
+
+src/generateWorkflow.ts (wire-up; minimal repair)
+
+import { Retriever } from "./retriever";
+import { composePrompt } from "./prompt";
+import { callLLM } from "./llm";
+import { validateWorkflow } from "./validation";
+
+function extractJson(text: string): string {
+  // Strip fences if model added them.
+  const m = text.match(/\{[\s\S]*\}/);
+  return m ? m[0] : text.trim();
+}
+
+export async function generateWorkflow(userPrompt: string, opts?: { k?: number; model?: string; debug?: boolean }) {
+  const retriever = new Retriever();
+  const k = opts?.k ?? 3;
+  const examples = retriever.retrieve(userPrompt, k);
+  const prompt = composePrompt(userPrompt, examples);
+  const res = await callLLM(prompt, opts?.model);
+  const raw = extractJson(res.raw);
+
+  let obj: any;
+  try { obj = JSON.parse(raw); } catch (e) {
+    if (opts?.debug) console.error("Parse error; attempting compact repair");
+    // Minimal repair: remove trailing junk then retry parse
+    const compact = raw.replace(/```json|```/g, "").trim();
+    obj = JSON.parse(compact);
+  }
+
+  const v1 = validateWorkflow(obj);
+  if (v1.valid) return { workflow: obj, examples };
+
+  // Open-ended repair path: provide errors back to model once.
+  const repairMsg = `The previous JSON failed validation: ${v1.errors}. Please return a corrected JSON only.`;
+  const repair = await callLLM(composePrompt(userPrompt + "\n" + repairMsg, examples), opts?.model);
+  const raw2 = extractJson(repair.raw);
+  const obj2 = JSON.parse(raw2);
+  const v2 = validateWorkflow(obj2);
+  return { workflow: obj2, examples, valid: v2.valid, errors: v2.errors };
+}
+
+
+⸻
+
+src/eval.ts (simple scoring; candidate can enhance)
+
+import fs from "fs";
+import path from "path";
+import { generateWorkflow } from "./generateWorkflow";
+
+interface Gold { trigger: any; actions: any[] }
+
+function normStr(s: any) { return String(s ?? "").trim().toLowerCase(); }
+function setOverlap(a: string[] = [], b: string[] = []) {
+  const A = new Set(a.map(normStr));
+  const B = new Set(b.map(normStr));
+  let inter = 0; A.forEach(x => { if (B.has(x)) inter++; });
+  return inter / Math.max(1, Math.max(A.size, B.size));
+}
+
+function scorePair(pred: any, gold: Gold) {
+  const out = { schemaValid: true, triggerType: 0, actionTypes: 0, fields: 0 };
+  // types
+  out.triggerType = pred?.trigger?.type === gold.trigger.type ? 1 : 0;
+  const predActs = (pred?.actions || []).map((a: any) => a.type);
+  const goldActs = (gold.actions || []).map(a => a.type);
+  out.actionTypes = setOverlap(predActs, goldActs);
+  // field-level: naive check of common fields
+  const pcond = pred?.trigger?.conditions?.[0];
+  const gcond = gold?.trigger?.conditions?.[0];
+  let fieldPts = 0, total = 0;
+  if (gcond?.field) { total++; if (normStr(pcond?.field) === normStr(gcond.field)) fieldPts++; }
+  if (gcond?.operator) { total++; if (normStr(pcond?.operator) === normStr(gcond.operator)) fieldPts++; }
+  if (gcond?.value) { total++; const pv = Array.isArray(pcond?.value) ? pcond.value : [pcond?.value]; const gv = Array.isArray(gcond?.value) ? gcond.value : [gcond?.value]; if (setOverlap(pv.map(String), gv.map(String)) > 0.66) fieldPts++; }
+  out.fields = total ? fieldPts / total : 1;
+  return out;
+}
+
+async function main() {
+  const prompts: string[] = JSON.parse(fs.readFileSync(path.resolve("data/eval_prompts.json"), "utf-8"));
+  const gold: Gold[] = JSON.parse(fs.readFileSync(path.resolve("data/eval_gold.json"), "utf-8"));
+
+  let validCount = 0; let sumTrig = 0; let sumActs = 0; let sumFields = 0;
+
+  for (let i = 0; i < prompts.length; i++) {
+    const p = prompts[i];
+    process.stdout.write(`\n[${i+1}/${prompts.length}] ${p}\n`);
+    try {
+      const { workflow } = await generateWorkflow(p, { k: 3 });
+      const s = scorePair(workflow, gold[i]);
+      const schemaValid = true; // generateWorkflow already validated internally
+      validCount += schemaValid ? 1 : 0;
+      sumTrig += s.triggerType; sumActs += s.actionTypes; sumFields += s.fields;
+      console.log(`→ triggerType=${s.triggerType.toFixed(2)} actionTypes=${s.actionTypes.toFixed(2)} fields=${s.fields.toFixed(2)}`);
+    } catch (e:any) {
+      console.log(`✖ error: ${e.message}`);
+    }
+  }
+
+  const n = prompts.length;
+  console.log("\n==== SUMMARY ====");
+  console.log(`Schema Validity: ${(validCount/n*100).toFixed(0)}%`);
+  console.log(`Trigger Type Acc: ${(sumTrig/n*100).toFixed(0)}%`);
+  console.log(`Action Types Overlap: ${(sumActs/n*100).toFixed(0)}%`);
+  console.log(`Field Match: ${(sumFields/n*100).toFixed(0)}%`);
+}
+
+main();
+
+
+⸻
+
+src/run.ts (CLI)
+
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
+import { generateWorkflow } from "./generateWorkflow";
+
+const argv = yargs(hideBin(process.argv))
+  .option("prompt", { type: "string", demandOption: true })
+  .option("k", { type: "number", default: 3 })
+  .option("model", { type: "string" })
+  .option("debug", { type: "boolean", default: false })
+  .parseSync();
+
+(async () => {
+  const res = await generateWorkflow(argv.prompt, { k: argv.k, model: argv.model, debug: argv.debug });
+  console.log(JSON.stringify(res.workflow, null, 2));
+})();
+
+
+⸻
+
+How to run (for interviewer)
+
+# 1) Setup
+cp .env.example .env  # add your key
+npm i
+
+# 2) One-off generation
+npm run dev -- --prompt "Notify team when customer reply contains phrase urgent"
+
+# 3) Eval pass
+npm run eval
+
+Note: Validation & repair strategy is intentionally open-ended. The skeleton performs one naive repair round; candidates are encouraged to redesign/improve this layer (structured decoding, stricter guards, better error surfacing, etc.).

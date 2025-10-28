@@ -1,0 +1,108 @@
+[
+  {
+    "prompt": "Notify team when customer reply contains phrase urgent",
+    "workflow": {
+      "trigger": {
+        "type": "customer_reply",
+        "name": "Customer Reply Contains 'Urgent'",
+        "conditions": [
+          { "field": "message.body", "operator": "contains_any", "value": ["urgent"] }
+        ]
+      },
+      "actions": [
+        {
+          "type": "internal_notification",
+          "name": "Notify Team about Urgent Reply",
+          "attributes": {
+            "title": "Urgent Customer Reply",
+            "body": "A customer reply contains 'urgent'. Please check.",
+            "redirectPage": "conversation",
+            "userType": "all"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "prompt": "When a contact gets tag vip-added, send an SMS",
+    "workflow": {
+      "trigger": {
+        "type": "contact_tag_added",
+        "name": "VIP Tag Added",
+        "conditions": [
+          { "field": "tagsAdded", "operator": "equals", "value": "vip-added" }
+        ]
+      },
+      "actions": [
+        { "type": "send_sms", "name": "VIP SMS", "attributes": { "body": "Welcome VIP!" } }
+      ]
+    }
+  },
+  {
+    "prompt": "If form QGjfvBGQ95IW321CeMnH is submitted, add tags lead and web",
+    "workflow": {
+      "trigger": {
+        "type": "form_submission",
+        "name": "Specific Form Submitted",
+        "conditions": [
+          { "field": "form.id", "operator": "in", "value": ["QGjfvBGQ95IW321CeMnH"] }
+        ]
+      },
+      "actions": [
+        { "type": "add_tag_to_contact", "name": "Tag Lead/Web", "attributes": { "tags": ["lead", "web"] } }
+      ]
+    }
+  },
+  {
+    "prompt": "When appointment is booked on calendar h5fFrK6qybX2wL4aEay0, send confirmation email and tag booked",
+    "workflow": {
+      "trigger": {
+        "type": "appointment_booked",
+        "name": "Booking on Specific Calendar",
+        "conditions": [
+          { "field": "calendar.id", "operator": "equals", "value": "h5fFrK6qybX2wL4aEay0" }
+        ]
+      },
+      "actions": [
+        {
+          "type": "send_email",
+          "name": "Confirm Email",
+          "attributes": { "subject": "Your Appointment is Confirmed", "html": "<p>See you soon.</p>" }
+        },
+        {
+          "type": "add_tag_to_contact",
+          "name": "Tag Booked",
+          "attributes": { "tags": ["booked"] }
+        }
+      ]
+    }
+  },
+  {
+    "prompt": "On successful payment, call a webhook and send a receipt email",
+    "workflow": {
+      "trigger": {
+        "type": "payment_received",
+        "name": "Payment Succeeded",
+        "conditions": [
+          { "field": "payment.payment_status", "operator": "equals", "value": "succeeded" }
+        ]
+      },
+      "actions": [
+        {
+          "type": "webhook_call",
+          "name": "Payment Webhook",
+          "attributes": {
+            "method": "POST",
+            "url": "https://api.example.com/pay",
+            "headers": [{ "key": "Content-Type", "value": "application/json" }]
+          }
+        },
+        {
+          "type": "send_email",
+          "name": "Receipt Email",
+          "attributes": { "subject": "Receipt", "html": "<p>Thank you for your purchase.</p>" }
+        }
+      ]
+    }
+  }
+]
