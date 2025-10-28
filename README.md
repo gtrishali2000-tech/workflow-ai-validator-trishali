@@ -1,7 +1,4 @@
-# Workflows AI - Live Coding Round
-
-**Duration:** 60 minutes  
-**Reading Time:** 5 minutes
+# Workflows AI 
 
 ## Overview
 
